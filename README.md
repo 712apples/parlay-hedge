@@ -2,7 +2,7 @@
 
 Bet every leg of a parlay as a single, then place a smaller bet on the parlay itself. This calculator tells you how much to put on the parlay so that **if all but one leg hits, you still come out ahead**, and if every leg hits, the parlay pays out on top of your singles.
 
-**[Open the app](https://YOUR-USERNAME.github.io/parlay-hedge/)**
+**[Open the app](https://712apples.github.io/parlay-hedge/)**
 
 ## Example
 
