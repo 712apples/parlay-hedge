@@ -1,0 +1,1188 @@
+<!DOCTYPE html>
+<!--
+  Parlay Hedge Calculator
+  =======================
+
+  Summary:
+    Sizes a parlay bet for a "singles + parlay" strategy. The user bets every
+    leg as an individual single, then places a smaller parlay on all legs.
+    The calculator finds the largest parlay stake that still leaves the whole
+    ticket net positive (or above a user-chosen minimum profit) when exactly
+    one leg misses, i.e. when (n - 1) of the n singles win.
+
+    For leg i with decimal odds d_i and single stake S_i, if leg j is the only
+    miss, the singles net  sum_{i != j} S_i (d_i - 1) - S_j  and the parlay
+    loses its stake P. The parlay stake must therefore satisfy
+        P < min_j [ sum_{i != j} S_i (d_i - 1) - S_j ] - minimum profit.
+
+    Features:
+      - American or decimal odds (toggle converts existing entries).
+      - One stake for every single, or a custom stake per leg.
+      - Parlay payout from the true leg odds, a profit boost (%) with an
+        optional cap on extra winnings, or the sportsbook's quoted odds.
+      - Minimum guaranteed profit and stake rounding.
+      - Optional "actual" parlay stake (e.g. a boost's max-bet limit).
+      - Warnings and suggestions when no parlay stake can work.
+      - Outcome tables: each single-leg miss, results grouped by legs hit,
+        and every win/loss combination.
+      - Installable Progressive Web App (home-screen icon, full-screen,
+        works offline) when hosted over HTTPS.
+
+  Input files (same folder, used only when hosted as an installable app):
+    manifest.webmanifest  - App name, colors, and icon list.
+    sw.js                 - Service worker that caches the app for offline use.
+    icons\*.png           - App icons (created by generate_icons.py).
+  Output files: None. Results are rendered on the page only.
+
+  Location: D:\OneDrive\Code\DFS_direct\Parlay_Calculator\index.html
+  Usage:
+    - Desktop: open this file in any modern web browser.
+    - Phone: host the Parlay_Calculator folder on an HTTPS site (e.g. GitHub
+      Pages), open the link, then use "Add to Home Screen".
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="description" content="Size a parlay so your singles still come out ahead if all but one leg hits.">
+<meta name="theme-color" content="#0f172a">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Parlay Hedge">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<title>Parlay Hedge Calculator</title>
+<style>
+  :root {
+    --bg: #0f172a;
+    --panel: #1e293b;
+    --panel2: #273449;
+    --border: #334155;
+    --text: #e2e8f0;
+    --muted: #94a3b8;
+    --accent: #38bdf8;
+    --good: #4ade80;
+    --bad: #f87171;
+    --warn: #fbbf24;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    -webkit-tap-highlight-color: transparent;
+    -webkit-text-size-adjust: 100%;
+  }
+  .container {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding:
+      calc(24px + env(safe-area-inset-top))
+      calc(16px + env(safe-area-inset-right))
+      calc(48px + env(safe-area-inset-bottom))
+      calc(16px + env(safe-area-inset-left));
+  }
+  h1 { margin: 0 0 4px; font-size: 1.6rem; }
+  .subtitle { color: var(--muted); margin: 0 0 24px; }
+  .layout {
+    display: grid;
+    grid-template-columns: minmax(340px, 440px) 1fr;
+    gap: 20px;
+    align-items: start;
+  }
+  @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px;
+    margin-bottom: 20px;
+  }
+  .card h2 {
+    font-size: .85rem;
+    margin: 0 0 14px;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    color: var(--muted);
+  }
+  label { display: block; font-size: .85rem; color: var(--muted); margin-bottom: 4px; }
+  .field { margin-bottom: 14px; }
+  input[type=number], input[type=text], select {
+    width: 100%;
+    padding: 8px 10px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-size: 1rem; /* 16px minimum stops iOS Safari from zooming in on focus */
+  }
+  input:focus, select:focus { outline: 2px solid var(--accent); border-color: transparent; }
+  .odds-wrap { display: flex; gap: 4px; }
+  .sign-btn {
+    flex: none;
+    width: 34px;
+    background: var(--panel2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-size: 1rem;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+  .format-decimal .sign-btn { display: none; }
+  input.invalid { border-color: var(--bad); background: #2a1215; }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .segmented { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .segmented button {
+    background: transparent;
+    color: var(--muted);
+    border: 0;
+    padding: 8px 16px;
+    cursor: pointer;
+    font-size: .9rem;
+  }
+  .segmented button.active { background: var(--accent); color: #0f172a; font-weight: 600; }
+  .checkbox { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: .9rem; cursor: pointer; margin: 0; }
+  .hint { color: var(--muted); font-size: .8rem; margin: 6px 0 0; line-height: 1.4; }
+  .hidden { display: none !important; }
+
+  table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+  th, td { padding: 7px 8px; text-align: left; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .legs-table input { padding: 6px 8px; }
+  .legs-table td:first-child { white-space: nowrap; color: var(--muted); }
+  .legs-table:not(.show-stakes) .stake-col { display: none; }
+  .table-wrap { max-height: 480px; overflow: auto; }
+  .table-wrap th { position: sticky; top: 0; background: var(--panel); }
+  tr.highlight td { background: rgba(56, 189, 248, .08); }
+
+  .pos { color: var(--good); }
+  .neg { color: var(--bad); }
+
+  .hero { background: linear-gradient(135deg, #0c4a6e, var(--panel)); }
+  .hero-label { color: var(--muted); font-size: .85rem; text-transform: uppercase; letter-spacing: .06em; }
+  .hero-value { font-size: 2.6rem; font-weight: 700; margin: 4px 0 6px; font-variant-numeric: tabular-nums; }
+  .hero-sub { color: var(--text); font-size: .95rem; line-height: 1.45; }
+  .hero.bad { background: linear-gradient(135deg, #4c1d1d, var(--panel)); }
+  .hero.bad .hero-value { color: var(--bad); font-size: 2rem; }
+
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+  .stat { background: var(--panel2); border-radius: 10px; padding: 12px; }
+  .stat .label { color: var(--muted); font-size: .78rem; }
+  .stat .value { font-size: 1.3rem; font-weight: 600; margin: 4px 0 2px; font-variant-numeric: tabular-nums; }
+  .stat .detail { color: var(--muted); font-size: .78rem; }
+
+  .alert {
+    border-left: 4px solid var(--accent);
+    background: var(--panel);
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-bottom: 14px;
+    line-height: 1.45;
+    font-size: .92rem;
+  }
+  .alert.error { border-color: var(--bad); background: #2a1215; }
+  .alert.warn { border-color: var(--warn); background: #2a2210; }
+  .alert ul { margin: 8px 0 0; padding-left: 20px; }
+  .alert li { margin-bottom: 4px; }
+
+  .chip {
+    display: inline-block;
+    padding: 1px 6px;
+    margin: 1px 2px 1px 0;
+    border-radius: 6px;
+    font-size: .75rem;
+    font-weight: 600;
+  }
+  .chip.hit { background: rgba(74, 222, 128, .15); color: var(--good); }
+  .chip.miss { background: rgba(248, 113, 113, .15); color: var(--bad); }
+
+  details summary { cursor: pointer; color: var(--muted); font-size: .85rem; text-transform: uppercase; letter-spacing: .06em; }
+  details[open] summary { margin-bottom: 12px; }
+  .footnote { color: var(--muted); font-size: .8rem; line-height: 1.5; }
+
+  .mobile-bar { display: none; }
+  @media (max-width: 900px) {
+    .container { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
+    .mobile-bar {
+      display: flex;
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 10;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      padding: 10px calc(16px + env(safe-area-inset-right)) calc(10px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
+      background: rgba(15, 23, 42, .95);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      border-top: 1px solid var(--border);
+      color: var(--text);
+      text-decoration: none;
+      transition: transform .2s ease;
+    }
+    .mobile-bar.offscreen { transform: translateY(110%); }
+    .mobile-bar .bar-label { color: var(--muted); font-size: .75rem; text-transform: uppercase; letter-spacing: .06em; }
+    .mobile-bar .bar-stake { font-size: 1.4rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .mobile-bar .bar-detail { font-size: .85rem; text-align: right; }
+  }
+  @media (max-width: 560px) {
+    h1 { font-size: 1.35rem; }
+    .subtitle { font-size: .9rem; margin-bottom: 16px; }
+    .card { padding: 14px; margin-bottom: 14px; }
+    .layout { gap: 0; }
+    table { font-size: .82rem; }
+    th, td { padding: 6px 4px; }
+    .implied-col { display: none; }
+    .hero-value { font-size: 2.2rem; }
+    .stats { grid-template-columns: 1fr 1fr; gap: 8px; }
+    .stat { padding: 10px; }
+    .stat .value { font-size: 1.1rem; }
+    .segmented button { padding: 10px 18px; }
+    .table-wrap { max-height: 60vh; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Parlay Hedge Calculator</h1>
+  <p class="subtitle">Bet every leg as a single, then size a smaller parlay so the whole ticket still comes out ahead if all but one leg hits.</p>
+
+  <div class="layout">
+    <!-- Inputs -->
+    <div>
+      <div class="card">
+        <h2>Bet setup</h2>
+        <div class="field">
+          <label>Odds format</label>
+          <div class="segmented" id="formatToggle">
+            <button type="button" data-format="american" class="active">American</button>
+            <button type="button" data-format="decimal">Decimal</button>
+          </div>
+        </div>
+        <div class="row2">
+          <div class="field">
+            <label for="legCount">Number of legs</label>
+            <select id="legCount"></select>
+          </div>
+          <div class="field">
+            <label for="defaultStake">Stake per single ($)</label>
+            <input type="number" id="defaultStake" value="100" min="0" step="any" inputmode="decimal">
+          </div>
+        </div>
+        <label class="checkbox"><input type="checkbox" id="customStakes"> Set a different stake for each leg</label>
+      </div>
+
+      <div class="card">
+        <h2>Legs</h2>
+        <table class="legs-table" id="legsTable">
+          <thead>
+            <tr>
+              <th>Leg</th>
+              <th>Odds</th>
+              <th class="stake-col">Stake ($)</th>
+              <th class="num implied-col">Implied</th>
+              <th class="num">Profit if hit</th>
+            </tr>
+          </thead>
+          <tbody id="legsBody"></tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <h2>Parlay odds</h2>
+        <div class="field">
+          <label for="parlayMode">Parlay payout</label>
+          <select id="parlayMode">
+            <option value="calculated">Calculated from legs (no boost)</option>
+            <option value="boost">Profit boost (%)</option>
+            <option value="manual">Sportsbook's quoted parlay odds</option>
+          </select>
+        </div>
+        <div id="boostFields" class="row2 hidden">
+          <div class="field">
+            <label for="boostPct">Profit boost (%)</label>
+            <input type="number" id="boostPct" value="25" min="0" step="any" inputmode="decimal">
+          </div>
+          <div class="field">
+            <label for="boostCap">Max extra winnings ($)</label>
+            <input type="number" id="boostCap" min="0" step="any" inputmode="decimal" placeholder="No cap">
+          </div>
+        </div>
+        <div id="manualFields" class="field hidden">
+          <label for="manualOdds">Quoted parlay odds</label>
+          <div class="odds-wrap">
+            <button type="button" class="sign-btn" aria-label="Flip plus/minus sign">&plusmn;</button>
+            <input type="text" id="manualOdds" class="odds-input" inputmode="numeric" placeholder="+600">
+          </div>
+        </div>
+        <p class="hint" id="parlayOddsSummary"></p>
+      </div>
+
+      <div class="card">
+        <h2>Parlay sizing</h2>
+        <div class="row2">
+          <div class="field">
+            <label for="minProfit">Min profit if one leg misses ($)</label>
+            <input type="number" id="minProfit" value="0" min="0" step="any" inputmode="decimal">
+          </div>
+          <div class="field">
+            <label for="roundTo">Round parlay stake down to</label>
+            <select id="roundTo">
+              <option value="0.01">$0.01</option>
+              <option value="0.1">$0.10</option>
+              <option value="1" selected>$1</option>
+              <option value="5">$5</option>
+            </select>
+          </div>
+        </div>
+        <div class="field">
+          <label for="actualStake">Parlay stake you'll actually bet ($, optional)</label>
+          <input type="number" id="actualStake" min="0" step="any" inputmode="decimal" placeholder="Use recommended">
+          <p class="hint">Useful when a boost has a max bet. Any stake at or below the recommendation keeps the one-miss outcome positive.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Results -->
+    <div>
+      <div id="alerts"></div>
+      <div id="results">
+        <div class="card hero" id="heroCard">
+          <div class="hero-label">Recommended parlay stake</div>
+          <div class="hero-value" id="recStake">&mdash;</div>
+          <div class="hero-sub" id="recSub"></div>
+        </div>
+
+        <div class="card">
+          <h2>Outcomes at your parlay stake</h2>
+          <div class="stats" id="stats"></div>
+        </div>
+
+        <div class="card">
+          <h2>If exactly one leg misses</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Missed leg</th>
+                <th>Odds</th>
+                <th class="num">Singles</th>
+                <th class="num">Parlay</th>
+                <th class="num">Net</th>
+              </tr>
+            </thead>
+            <tbody id="oneMissBody"></tbody>
+          </table>
+          <p class="hint" id="oneMissHint"></p>
+        </div>
+
+        <div class="card">
+          <h2>Results by legs hit</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Legs hit</th>
+                <th class="num">Combos</th>
+                <th class="num">Worst net</th>
+                <th class="num">Best net</th>
+              </tr>
+            </thead>
+            <tbody id="summaryBody"></tbody>
+          </table>
+        </div>
+
+        <div class="card">
+          <details id="fullDetails">
+            <summary>Every win/loss combination (<span id="comboCount">0</span>)</summary>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Result by leg</th>
+                    <th class="num">Hit</th>
+                    <th class="num">Singles</th>
+                    <th class="num">Parlay</th>
+                    <th class="num">Net</th>
+                  </tr>
+                </thead>
+                <tbody id="fullBody"></tbody>
+              </table>
+            </div>
+          </details>
+        </div>
+
+        <p class="footnote">
+          Pushes and voided legs are not modeled (a push usually refunds that single and removes the leg from the parlay, which lowers the parlay odds).
+          This strategy reshapes your risk; it does not change the expected value of each bet.
+        </p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<a href="#heroCard" class="mobile-bar" id="mobileBar">
+  <div>
+    <div class="bar-label">Parlay stake</div>
+    <div class="bar-stake" id="barStake">&mdash;</div>
+  </div>
+  <div class="bar-detail" id="barDetail"></div>
+</a>
+
+<script>
+/**
+ * Parlay Hedge Calculator - client-side logic.
+ *
+ * Reads the form, validates inputs, computes the maximum parlay stake that
+ * keeps a one-leg-miss outcome above the minimum profit, and renders all
+ * result cards and outcome tables. Recalculates on every input change.
+ * When served over HTTP(S), registers sw.js so the app works offline.
+ *
+ * Inputs:  Form fields on this page (no files).
+ * Outputs: DOM updates on this page (no files).
+ */
+(function () {
+  'use strict';
+
+  const MIN_LEGS = 2;
+  const MAX_LEGS = 12;
+  const DEFAULT_LEGS = 3;
+  const DEFAULT_ODDS = { american: '-110', decimal: '1.91' };
+  const EXAMPLE_ODDS = { american: '-110 or +150', decimal: '1.91 or 2.50' };
+  // iPhone keypads for these modes have no minus key, so American odds rely on the ± button.
+  const ODDS_INPUT_MODE = { american: 'numeric', decimal: 'decimal' };
+  const EPS = 1e-9;
+
+  const $ = (id) => document.getElementById(id);
+  const els = {
+    formatToggle: $('formatToggle'),
+    legCount: $('legCount'),
+    defaultStake: $('defaultStake'),
+    customStakes: $('customStakes'),
+    legsTable: $('legsTable'),
+    legsBody: $('legsBody'),
+    parlayMode: $('parlayMode'),
+    boostFields: $('boostFields'),
+    boostPct: $('boostPct'),
+    boostCap: $('boostCap'),
+    manualFields: $('manualFields'),
+    manualOdds: $('manualOdds'),
+    parlayOddsSummary: $('parlayOddsSummary'),
+    minProfit: $('minProfit'),
+    roundTo: $('roundTo'),
+    actualStake: $('actualStake'),
+    alerts: $('alerts'),
+    results: $('results'),
+    heroCard: $('heroCard'),
+    recStake: $('recStake'),
+    recSub: $('recSub'),
+    stats: $('stats'),
+    oneMissBody: $('oneMissBody'),
+    oneMissHint: $('oneMissHint'),
+    summaryBody: $('summaryBody'),
+    fullDetails: $('fullDetails'),
+    comboCount: $('comboCount'),
+    fullBody: $('fullBody'),
+    mobileBar: $('mobileBar'),
+    barStake: $('barStake'),
+    barDetail: $('barDetail'),
+  };
+
+  const usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
+
+  let oddsFormat = 'american';
+  let lastResult = null;
+
+  // ---------------------------------------------------------------------
+  // Odds and number helpers
+  // ---------------------------------------------------------------------
+
+  /**
+   * Convert American odds to decimal odds.
+   * @param {number} american - American odds (|value| >= 100).
+   * @returns {number} Decimal odds (> 1).
+   */
+  function americanToDecimal(american) {
+    return american > 0 ? 1 + american / 100 : 1 + 100 / -american;
+  }
+
+  /**
+   * Convert decimal odds to American odds.
+   * @param {number} dec - Decimal odds (> 1).
+   * @returns {number} American odds (unrounded).
+   */
+  function decimalToAmerican(dec) {
+    return dec >= 2 ? (dec - 1) * 100 : -100 / (dec - 1);
+  }
+
+  /**
+   * Parse user-entered odds text into decimal odds.
+   * @param {string} text - Raw input value.
+   * @param {'american'|'decimal'} format - Format the text is written in.
+   * @returns {number|null} Decimal odds, or null if invalid.
+   */
+  function parseOdds(text, format) {
+    const trimmed = String(text).trim();
+    const value = Number(trimmed);
+    if (trimmed === '' || !Number.isFinite(value)) return null;
+    if (format === 'american') return Math.abs(value) >= 100 ? americanToDecimal(value) : null;
+    return value > 1 ? value : null;
+  }
+
+  /**
+   * Format decimal odds as text in the given format.
+   * @param {number} dec - Decimal odds.
+   * @param {'american'|'decimal'} format - Output format.
+   * @returns {string} Formatted odds, e.g. "+150" or "2.50".
+   */
+  function formatOdds(dec, format) {
+    if (format === 'american') {
+      const american = Math.round(decimalToAmerican(dec));
+      return american > 0 ? `+${american}` : `${american}`;
+    }
+    return dec.toFixed(2);
+  }
+
+  /**
+   * Describe odds in the active format with the other format in parentheses.
+   * @param {number} dec - Decimal odds.
+   * @returns {string} e.g. "+596 (6.96)".
+   */
+  function describeOdds(dec) {
+    const other = oddsFormat === 'american' ? 'decimal' : 'american';
+    return `${formatOdds(dec, oddsFormat)} (${formatOdds(dec, other)})`;
+  }
+
+  /**
+   * Format a dollar amount, treating sub-cent values as zero.
+   * @param {number} x - Amount in dollars.
+   * @returns {string} e.g. "$81.00".
+   */
+  function money(x) {
+    return usd.format(Math.abs(x) < 0.005 ? 0 : x);
+  }
+
+  /**
+   * Format a net dollar result with an explicit sign.
+   * @param {number} x - Net amount in dollars.
+   * @returns {string} e.g. "+$12.50" or "−$40.00".
+   */
+  function signedMoney(x) {
+    if (Math.abs(x) < 0.005) return usd.format(0);
+    return (x > 0 ? '+' : '\u2212') + usd.format(Math.abs(x));
+  }
+
+  /**
+   * CSS class for coloring a net result.
+   * @param {number} x - Net amount.
+   * @returns {string} 'pos', 'neg', or ''.
+   */
+  function netClass(x) {
+    if (x > 0.005) return 'pos';
+    if (x < -0.005) return 'neg';
+    return '';
+  }
+
+  /**
+   * Round a value down to a multiple of step, returned in whole cents.
+   * @param {number} x - Value to round.
+   * @param {number} step - Rounding increment in dollars.
+   * @returns {number} Rounded value.
+   */
+  function floorTo(x, step) {
+    return Math.round(Math.floor(x / step + EPS) * step * 100) / 100;
+  }
+
+  /**
+   * Count set bits (number of legs hit in a scenario bitmask).
+   * @param {number} mask - Bitmask where bit i set means leg i hit.
+   * @returns {number} Number of set bits.
+   */
+  function popcount(mask) {
+    let count = 0;
+    while (mask) {
+      mask &= mask - 1;
+      count++;
+    }
+    return count;
+  }
+
+  /**
+   * Toggle the invalid style on an input.
+   * @param {HTMLInputElement} input - Input element.
+   * @param {boolean} invalid - Whether to mark invalid.
+   */
+  function setInvalid(input, invalid) {
+    input.classList.toggle('invalid', invalid);
+  }
+
+  // ---------------------------------------------------------------------
+  // Leg rows
+  // ---------------------------------------------------------------------
+
+  /**
+   * Create a table row for one leg.
+   * @param {number} index - Zero-based leg index.
+   * @returns {HTMLTableRowElement} The new row.
+   */
+  function createLegRow(index) {
+    const row = document.createElement('tr');
+    row.innerHTML = `
+      <td>Leg ${index + 1}</td>
+      <td>
+        <div class="odds-wrap">
+          <button type="button" class="sign-btn" aria-label="Flip plus/minus sign">&plusmn;</button>
+          <input type="text" class="leg-odds odds-input" inputmode="${ODDS_INPUT_MODE[oddsFormat]}" value="${DEFAULT_ODDS[oddsFormat]}">
+        </div>
+      </td>
+      <td class="stake-col"><input type="number" class="leg-stake" min="0" step="any" inputmode="decimal" value="${els.defaultStake.value}"></td>
+      <td class="num leg-implied implied-col"></td>
+      <td class="num leg-profit"></td>`;
+    return row;
+  }
+
+  /** Add or remove leg rows to match the selected number of legs. */
+  function syncLegRows() {
+    const count = Number(els.legCount.value);
+    const rows = els.legsBody.rows;
+    while (rows.length < count) els.legsBody.appendChild(createLegRow(rows.length));
+    while (rows.length > count) els.legsBody.deleteRow(rows.length - 1);
+  }
+
+  /**
+   * Switch odds format, converting every entered odds value.
+   * @param {'american'|'decimal'} format - New format.
+   */
+  function setOddsFormat(format) {
+    if (format === oddsFormat) return;
+    document.querySelectorAll('.odds-input').forEach((input) => {
+      input.inputMode = ODDS_INPUT_MODE[format];
+      const dec = parseOdds(input.value, oddsFormat);
+      if (dec === null) return;
+      input.value = format === 'decimal' ? String(Number(dec.toFixed(3))) : formatOdds(dec, format);
+    });
+    oddsFormat = format;
+    document.body.classList.toggle('format-decimal', format === 'decimal');
+    els.manualOdds.placeholder = format === 'american' ? '+600' : '7.00';
+    els.formatToggle.querySelectorAll('button').forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.format === format);
+    });
+  }
+
+  /**
+   * Flip the sign of American odds in an input (e.g. 110 -> -110 -> +110).
+   * @param {HTMLInputElement} input - Odds input next to the clicked ± button.
+   */
+  function flipSign(input) {
+    const value = input.value.trim();
+    if (value.startsWith('-')) input.value = `+${value.slice(1)}`;
+    else if (value.startsWith('+')) input.value = `-${value.slice(1)}`;
+    else input.value = `-${value}`;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  // ---------------------------------------------------------------------
+  // Input reading and calculation
+  // ---------------------------------------------------------------------
+
+  /**
+   * Read and validate all form inputs.
+   * @returns {object} Parsed inputs plus an `errors` array of messages.
+   */
+  function readInputs() {
+    const errors = [];
+    const custom = els.customStakes.checked;
+    const defaultStake = Number(els.defaultStake.value);
+    const defaultOk = defaultStake > 0;
+    setInvalid(els.defaultStake, !custom && !defaultOk);
+    if (!custom && !defaultOk) errors.push('Enter a stake per single greater than $0.');
+
+    const legs = Array.from(els.legsBody.rows).map((row, i) => {
+      const oddsInput = row.querySelector('.leg-odds');
+      const stakeInput = row.querySelector('.leg-stake');
+      const dec = parseOdds(oddsInput.value, oddsFormat);
+      setInvalid(oddsInput, dec === null);
+      if (dec === null) errors.push(`Leg ${i + 1}: enter valid ${oddsFormat} odds (e.g. ${EXAMPLE_ODDS[oddsFormat]}).`);
+
+      let stake = defaultStake;
+      if (custom) {
+        stake = Number(stakeInput.value);
+        setInvalid(stakeInput, !(stake > 0));
+        if (!(stake > 0)) errors.push(`Leg ${i + 1}: enter a stake greater than $0.`);
+      } else {
+        setInvalid(stakeInput, false);
+      }
+      return { dec, stake, row };
+    });
+
+    const mode = els.parlayMode.value;
+    let boostPct = 0;
+    let boostCap = Infinity;
+    let manualDec = null;
+    setInvalid(els.boostPct, false);
+    setInvalid(els.boostCap, false);
+    setInvalid(els.manualOdds, false);
+
+    if (mode === 'boost') {
+      boostPct = Number(els.boostPct.value);
+      const pctOk = els.boostPct.value.trim() !== '' && boostPct >= 0;
+      setInvalid(els.boostPct, !pctOk);
+      if (!pctOk) errors.push('Enter a profit boost of 0% or more.');
+
+      const capText = els.boostCap.value.trim();
+      if (capText !== '') {
+        boostCap = Number(capText);
+        const capOk = boostCap >= 0;
+        setInvalid(els.boostCap, !capOk);
+        if (!capOk) errors.push('Max extra winnings must be $0 or more (or leave blank for no cap).');
+      }
+    } else if (mode === 'manual') {
+      manualDec = parseOdds(els.manualOdds.value, oddsFormat);
+      setInvalid(els.manualOdds, manualDec === null);
+      if (manualDec === null) errors.push(`Enter the sportsbook's parlay odds in ${oddsFormat} format.`);
+    }
+
+    const minText = els.minProfit.value.trim();
+    const minProfit = minText === '' ? 0 : Number(minText);
+    setInvalid(els.minProfit, !(minProfit >= 0));
+    if (!(minProfit >= 0)) errors.push('Minimum profit must be $0 or more.');
+
+    const actualText = els.actualStake.value.trim();
+    let actualStake = null;
+    if (actualText !== '') {
+      actualStake = Number(actualText);
+      setInvalid(els.actualStake, !(actualStake >= 0));
+      if (!(actualStake >= 0)) errors.push('Parlay stake must be $0 or more (or leave blank to use the recommendation).');
+    } else {
+      setInvalid(els.actualStake, false);
+    }
+
+    return {
+      errors,
+      custom,
+      legs,
+      mode,
+      boostPct,
+      boostCap,
+      manualDec,
+      minProfit,
+      roundTo: Number(els.roundTo.value),
+      actualStake,
+    };
+  }
+
+  /**
+   * Run the parlay sizing math and build every outcome scenario.
+   * @param {object} inp - Validated inputs from readInputs().
+   * @returns {object} Calculation results used by the render functions.
+   */
+  function calculate(inp) {
+    const { legs } = inp;
+    const n = legs.length;
+    const profits = legs.map((leg) => leg.stake * (leg.dec - 1));
+    const totalWin = profits.reduce((a, b) => a + b, 0);
+    const totalSingles = legs.reduce((a, leg) => a + leg.stake, 0);
+
+    // Singles net when only leg j misses.
+    const oneMissSingles = legs.map((leg, j) => totalWin - profits[j] - leg.stake);
+    const breakEvenMax = Math.min(...oneMissSingles);
+    const bestOneMiss = Math.max(...oneMissSingles);
+    const limitingLeg = oneMissSingles.indexOf(breakEvenMax);
+    const bestLeg = oneMissSingles.indexOf(bestOneMiss);
+
+    const trueDec = legs.reduce((a, leg) => a * leg.dec, 1);
+    let parlayDec = trueDec;
+    if (inp.mode === 'boost') parlayDec = 1 + (trueDec - 1) * (1 + inp.boostPct / 100);
+    if (inp.mode === 'manual') parlayDec = inp.manualDec;
+
+    const parlayProfit = (stake) => {
+      if (inp.mode === 'boost') {
+        const base = stake * (trueDec - 1);
+        return base + Math.min(base * inp.boostPct / 100, inp.boostCap);
+      }
+      return stake * (parlayDec - 1);
+    };
+
+    let recommended = floorTo(breakEvenMax - inp.minProfit, inp.roundTo);
+    // Keep the one-miss result strictly positive when no minimum profit is set.
+    if (breakEvenMax - recommended < 0.005) recommended = floorTo(recommended - inp.roundTo, inp.roundTo);
+    const feasible = recommended > 0;
+    const parlayStake = inp.actualStake !== null ? inp.actualStake : (feasible ? recommended : 0);
+
+    const allMask = (1 << n) - 1;
+    const scenario = (mask) => {
+      let singles = 0;
+      for (let i = 0; i < n; i++) singles += (mask >> i) & 1 ? profits[i] : -legs[i].stake;
+      const parlay = mask === allMask ? parlayProfit(parlayStake) : -parlayStake;
+      return { mask, hits: popcount(mask), singles, parlay, net: singles + parlay };
+    };
+
+    const byHits = Array.from({ length: n + 1 }, () => ({ count: 0, worst: Infinity, best: -Infinity }));
+    for (let mask = 0; mask <= allMask; mask++) {
+      const s = scenario(mask);
+      const bucket = byHits[s.hits];
+      bucket.count++;
+      bucket.worst = Math.min(bucket.worst, s.net);
+      bucket.best = Math.max(bucket.best, s.net);
+    }
+    const worstTwoPlusMiss = Math.min(...byHits.slice(0, n - 1).map((b) => b.worst));
+
+    return {
+      n,
+      legs,
+      profits,
+      totalWin,
+      totalSingles,
+      oneMissSingles,
+      breakEvenMax,
+      bestOneMiss,
+      limitingLeg,
+      bestLeg,
+      trueDec,
+      parlayDec,
+      parlayProfit,
+      recommended,
+      feasible,
+      parlayStake,
+      allMask,
+      scenario,
+      byHits,
+      worstTwoPlusMiss,
+    };
+  }
+
+  // ---------------------------------------------------------------------
+  // Rendering
+  // ---------------------------------------------------------------------
+
+  /**
+   * Fill the implied-probability and profit cells in the legs table.
+   * @param {object} inp - Inputs from readInputs().
+   */
+  function updateLegCells(inp) {
+    inp.legs.forEach((leg) => {
+      const implied = leg.row.querySelector('.leg-implied');
+      const profit = leg.row.querySelector('.leg-profit');
+      implied.textContent = leg.dec ? `${(100 / leg.dec).toFixed(1)}%` : '\u2014';
+      profit.textContent = leg.dec && leg.stake > 0 ? money(leg.stake * (leg.dec - 1)) : '\u2014';
+    });
+  }
+
+  /**
+   * Odds threshold each leg must beat when all legs share the same odds
+   * and stake: (n - 1)(d - 1) > 1, i.e. d > 1 + 1 / (n - 1).
+   * @param {number} n - Number of legs.
+   * @returns {number} Minimum decimal odds.
+   */
+  function equalLegThreshold(n) {
+    return 1 + 1 / (n - 1);
+  }
+
+  /**
+   * Render warnings, suggestions, and informational notes.
+   * @param {object} inp - Inputs from readInputs().
+   * @param {object} r - Results from calculate().
+   */
+  function renderAlerts(inp, r) {
+    const alerts = [];
+    const limitName = `Leg ${r.limitingLeg + 1} (${formatOdds(r.legs[r.limitingLeg].dec, oddsFormat)})`;
+
+    if (r.breakEvenMax <= 0.005) {
+      const losing = r.oneMissSingles
+        .map((net, j) => ({ net, j }))
+        .filter((x) => x.net <= 0.005)
+        .map((x) => `Leg ${x.j + 1} misses: ${signedMoney(x.net)}`)
+        .join('; ');
+      const suggestions = [
+        `The costliest miss is ${limitName}. That is usually your longest-odds leg, because its single would have paid the most.`,
+        `With ${r.n} legs at equal stakes and similar odds, each leg needs odds better than ${describeOdds(equalLegThreshold(r.n))}.`,
+        'Adding another leg adds another winning single to cover a miss.',
+        'Pairing a long shot with heavy favorites makes this worse: the favorites\u2019 small profits can\u2019t cover losing the long shot\u2019s stake.',
+      ];
+      if (inp.custom) {
+        suggestions.push(`Lowering the stake on Leg ${r.limitingLeg + 1} improves that scenario, but slightly shrinks the cushion when the other legs miss.`);
+      }
+      alerts.push(`<div class="alert error"><strong>No parlay amount works for this setup.</strong>
+        Even with no parlay, the singles lose money when one leg misses (${losing}).
+        <ul>${suggestions.map((s) => `<li>${s}</li>`).join('')}</ul></div>`);
+    } else if (!r.feasible) {
+      const maxMin = floorTo(r.breakEvenMax - inp.roundTo, 0.01);
+      const fix = maxMin > 0
+        ? `To leave room for at least a ${money(inp.roundTo)} parlay, set the minimum profit to ${money(maxMin)} or less${inp.roundTo > 0.01 ? ', or round the stake to a smaller increment' : ''}.`
+        : `That is smaller than your ${money(inp.roundTo)} rounding increment, so round the stake to a smaller increment.`;
+      alerts.push(`<div class="alert warn"><strong>No parlay stake fits your minimum profit and rounding.</strong>
+        With no parlay at all, the worst one-leg miss (${limitName}) nets ${signedMoney(r.breakEvenMax)}. ${fix}</div>`);
+    }
+
+    if (inp.actualStake !== null) {
+      const worst = r.breakEvenMax - inp.actualStake;
+      if (worst < inp.minProfit - 0.005 || worst <= 0.005 && inp.actualStake > 0) {
+        alerts.push(`<div class="alert warn"><strong>Your parlay stake is above the safe amount.</strong>
+          At ${money(inp.actualStake)}, if ${limitName} misses you net ${signedMoney(worst)}.
+          The break-even maximum is ${money(r.breakEvenMax)}.</div>`);
+      }
+    }
+
+    if (inp.mode === 'manual' && Math.abs(r.parlayDec - r.trueDec) > 0.005) {
+      const pct = ((r.parlayDec - 1) / (r.trueDec - 1) - 1) * 100;
+      const cls = pct < 0 ? 'warn' : '';
+      const word = pct < 0 ? 'less' : 'more';
+      alerts.push(`<div class="alert ${cls}">The quoted parlay odds ${describeOdds(r.parlayDec)} pay
+        ${Math.abs(pct).toFixed(1)}% ${word} profit than the true combined odds ${describeOdds(r.trueDec)}.</div>`);
+    }
+
+    els.alerts.innerHTML = alerts.join('');
+  }
+
+  /**
+   * Render the recommended-stake hero card.
+   * @param {object} inp - Inputs from readInputs().
+   * @param {object} r - Results from calculate().
+   */
+  function renderHero(inp, r) {
+    els.heroCard.classList.toggle('bad', !r.feasible);
+    if (r.feasible) {
+      const cushion = r.breakEvenMax - r.recommended;
+      els.recStake.textContent = money(r.recommended);
+      els.recSub.innerHTML = `Break-even maximum is <strong>${money(r.breakEvenMax)}</strong>.
+        Betting ${money(r.recommended)} guarantees at least <strong class="pos">${signedMoney(cushion)}</strong>
+        if exactly one leg misses. Any smaller parlay stake works too.`;
+    } else {
+      els.recStake.textContent = 'No safe amount';
+      els.recSub.textContent = r.breakEvenMax <= 0.005
+        ? 'The singles alone lose money when one leg misses. See the warning above.'
+        : 'The minimum profit is higher than this setup can guarantee. See the warning above.';
+    }
+  }
+
+  /**
+   * Render the parlay odds summary under the parlay odds inputs.
+   * @param {object} inp - Inputs from readInputs().
+   * @param {object} r - Results from calculate().
+   */
+  function renderParlayOddsSummary(inp, r) {
+    let text = `True combined odds: ${describeOdds(r.trueDec)}.`;
+    if (inp.mode === 'boost') {
+      text += ` Boosted: ${describeOdds(r.parlayDec)}.`;
+      if (Number.isFinite(inp.boostCap) && inp.boostPct > 0) {
+        const capStake = inp.boostCap / ((r.trueDec - 1) * inp.boostPct / 100);
+        text += ` The ${money(inp.boostCap)} cap on extra winnings kicks in above a ${money(capStake)} parlay stake.`;
+      }
+    } else if (inp.mode === 'manual') {
+      text += ` Using quoted: ${describeOdds(r.parlayDec)}.`;
+    }
+    els.parlayOddsSummary.textContent = text;
+  }
+
+  /**
+   * Render the outcome stat tiles.
+   * @param {object} inp - Inputs from readInputs().
+   * @param {object} r - Results from calculate().
+   */
+  function renderStats(inp, r) {
+    const P = r.parlayStake;
+    const parlayWin = r.parlayProfit(P);
+    const allHit = r.totalWin + parlayWin;
+    const worstOne = r.breakEvenMax - P;
+    const bestOne = r.bestOneMiss - P;
+    const tiles = [
+      ['Parlay stake', money(P), '', inp.actualStake !== null ? 'Your entered amount' : 'Recommended amount'],
+      ['Total risked', money(r.totalSingles + P), '', `${money(r.totalSingles)} singles + ${money(P)} parlay`],
+      ['All legs hit', signedMoney(allHit), netClass(allHit), `Parlay profit ${signedMoney(parlayWin)}`],
+      ['One miss (worst)', signedMoney(worstOne), netClass(worstOne), `When Leg ${r.limitingLeg + 1} misses`],
+      ['One miss (best)', signedMoney(bestOne), netClass(bestOne), `When Leg ${r.bestLeg + 1} misses`],
+      ['Two or more miss (worst)', signedMoney(r.worstTwoPlusMiss), netClass(r.worstTwoPlusMiss), 'Not covered by this strategy'],
+    ];
+    els.stats.innerHTML = tiles.map(([label, value, cls, detail]) => `
+      <div class="stat">
+        <div class="label">${label}</div>
+        <div class="value ${cls}">${value}</div>
+        <div class="detail">${detail}</div>
+      </div>`).join('');
+  }
+
+  /**
+   * Render the table of single-leg-miss outcomes.
+   * @param {object} r - Results from calculate().
+   */
+  function renderOneMiss(r) {
+    const P = r.parlayStake;
+    els.oneMissBody.innerHTML = r.legs.map((leg, j) => {
+      const singles = r.oneMissSingles[j];
+      const net = singles - P;
+      return `<tr class="${j === r.limitingLeg ? 'highlight' : ''}">
+        <td>Leg ${j + 1}</td>
+        <td>${describeOdds(leg.dec)}</td>
+        <td class="num ${netClass(singles)}">${signedMoney(singles)}</td>
+        <td class="num ${netClass(-P)}">${signedMoney(-P)}</td>
+        <td class="num ${netClass(net)}"><strong>${signedMoney(net)}</strong></td>
+      </tr>`;
+    }).join('');
+    els.oneMissHint.textContent = `The highlighted row is the costliest miss and sets the parlay limit: `
+      + `Leg ${r.limitingLeg + 1}'s single would have paid the most, so losing it removes the biggest share of winnings.`;
+  }
+
+  /**
+   * Render the results-by-legs-hit summary table.
+   * @param {object} r - Results from calculate().
+   */
+  function renderSummary(r) {
+    const rows = [];
+    for (let k = r.n; k >= 0; k--) {
+      const b = r.byHits[k];
+      let label = `${k} of ${r.n}`;
+      if (k === r.n) label = `All ${r.n} (parlay wins)`;
+      else if (k === r.n - 1) label = `${k} of ${r.n} (one miss)`;
+      rows.push(`<tr class="${k === r.n - 1 ? 'highlight' : ''}">
+        <td>${label}</td>
+        <td class="num">${b.count}</td>
+        <td class="num ${netClass(b.worst)}">${signedMoney(b.worst)}</td>
+        <td class="num ${netClass(b.best)}">${signedMoney(b.best)}</td>
+      </tr>`);
+    }
+    els.summaryBody.innerHTML = rows.join('');
+  }
+
+  /**
+   * Render every win/loss combination, most legs hit first.
+   * @param {object} r - Results from calculate().
+   */
+  function renderFull(r) {
+    const masks = Array.from({ length: r.allMask + 1 }, (_, m) => m)
+      .sort((a, b) => popcount(b) - popcount(a) || b - a);
+    els.fullBody.innerHTML = masks.map((mask) => {
+      const s = r.scenario(mask);
+      const chips = r.legs.map((_, i) => {
+        const hit = (mask >> i) & 1;
+        return `<span class="chip ${hit ? 'hit' : 'miss'}">L${i + 1} ${hit ? '\u2713' : '\u2717'}</span>`;
+      }).join('');
+      return `<tr>
+        <td>${chips}</td>
+        <td class="num">${s.hits}</td>
+        <td class="num ${netClass(s.singles)}">${signedMoney(s.singles)}</td>
+        <td class="num ${netClass(s.parlay)}">${signedMoney(s.parlay)}</td>
+        <td class="num ${netClass(s.net)}"><strong>${signedMoney(s.net)}</strong></td>
+      </tr>`;
+    }).join('');
+  }
+
+  /**
+   * Render the pinned bottom bar shown on phone-width screens.
+   * @param {object|null} r - Results from calculate(), or null if inputs are invalid.
+   */
+  function renderMobileBar(r) {
+    if (!r) {
+      els.barStake.textContent = '\u2014';
+      els.barDetail.innerHTML = '<span class="neg">Fix inputs above</span>';
+      return;
+    }
+    const worstOne = r.breakEvenMax - r.parlayStake;
+    els.barStake.textContent = r.feasible || r.parlayStake > 0 ? money(r.parlayStake) : 'No safe amount';
+    els.barDetail.innerHTML = `One miss: <strong class="${netClass(worstOne)}">${signedMoney(worstOne)}</strong><br>`
+      + `All hit: <strong class="pos">${signedMoney(r.totalWin + r.parlayProfit(r.parlayStake))}</strong>`;
+  }
+
+  /** Read inputs, recalculate, and re-render everything. */
+  function recalc() {
+    const inp = readInputs();
+    updateLegCells(inp);
+
+    if (inp.errors.length) {
+      els.alerts.innerHTML = `<div class="alert error"><strong>Fix these inputs:</strong>
+        <ul>${inp.errors.map((e) => `<li>${e}</li>`).join('')}</ul></div>`;
+      els.results.classList.add('hidden');
+      els.parlayOddsSummary.textContent = '';
+      lastResult = null;
+      renderMobileBar(null);
+      return;
+    }
+
+    const r = calculate(inp);
+    lastResult = r;
+    els.results.classList.remove('hidden');
+    renderAlerts(inp, r);
+    renderHero(inp, r);
+    renderParlayOddsSummary(inp, r);
+    renderStats(inp, r);
+    renderOneMiss(r);
+    renderSummary(r);
+    renderMobileBar(r);
+    els.comboCount.textContent = r.allMask + 1;
+    if (els.fullDetails.open) renderFull(r);
+  }
+
+  // ---------------------------------------------------------------------
+  // Setup
+  // ---------------------------------------------------------------------
+
+  /** Build controls, attach listeners, and run the first calculation. */
+  function init() {
+    for (let n = MIN_LEGS; n <= MAX_LEGS; n++) {
+      els.legCount.add(new Option(`${n} legs`, n, n === DEFAULT_LEGS, n === DEFAULT_LEGS));
+    }
+    syncLegRows();
+
+    els.formatToggle.addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-format]');
+      if (!btn) return;
+      setOddsFormat(btn.dataset.format);
+      recalc();
+    });
+
+    els.legCount.addEventListener('change', () => {
+      syncLegRows();
+      recalc();
+    });
+
+    els.customStakes.addEventListener('change', () => {
+      els.legsTable.classList.toggle('show-stakes', els.customStakes.checked);
+      recalc();
+    });
+
+    els.defaultStake.addEventListener('input', () => {
+      if (els.customStakes.checked) return;
+      els.legsBody.querySelectorAll('.leg-stake').forEach((input) => {
+        input.value = els.defaultStake.value;
+      });
+    });
+
+    els.parlayMode.addEventListener('change', () => {
+      els.boostFields.classList.toggle('hidden', els.parlayMode.value !== 'boost');
+      els.manualFields.classList.toggle('hidden', els.parlayMode.value !== 'manual');
+      recalc();
+    });
+
+    els.fullDetails.addEventListener('toggle', () => {
+      if (els.fullDetails.open && lastResult) renderFull(lastResult);
+    });
+
+    document.addEventListener('click', (e) => {
+      const btn = e.target.closest('.sign-btn');
+      if (btn) flipSign(btn.parentElement.querySelector('.odds-input'));
+    });
+
+    document.addEventListener('input', recalc);
+
+    if ('IntersectionObserver' in window) {
+      new IntersectionObserver(([entry]) => {
+        els.mobileBar.classList.toggle('offscreen', entry.isIntersecting);
+      }).observe(els.heroCard);
+    }
+
+    if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+      window.addEventListener('load', () => navigator.serviceWorker.register('sw.js'));
+    }
+
+    recalc();
+  }
+
+  init();
+})();
+</script>
+</body>
+</html>
